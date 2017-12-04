@@ -61,20 +61,7 @@ import org.apache.http.impl.client.HttpClients;
  */
 public class App {
 
-    static class Dzialka {
-        public Dzialka(String id, int powierzchnia) {
-            super();
-            this.id = id;
-            this.powierzchnia = powierzchnia;
-        }
-        String id;
-        int powierzchnia;
-        @Override
-        public String toString() {
-            return "Dzialka [id=" + id + ", powierzchnia=" + powierzchnia + "]";
-        }
 
-    }
 
     private static String serviceURL = "http://mapy.geoportal.gov.pl/wss/service/pub/guest/G2_GO_WMS/MapServer/WMSServer?";
 
@@ -118,7 +105,7 @@ public class App {
     private final static Pattern idPattern = Pattern.compile("IDENTYFIKATOR=\"([^\"]+)\"");
     private final static Pattern powPattern = Pattern.compile("POWIERZCHNIA=\"([^\"]+)\"");
 
-    private static Stream<Dzialka> getPlotInfo(String imageServiceParameters, int x, int y) {
+    private static Stream<DzialkiModel.Dzialka> getPlotInfo(String imageServiceParameters, int x, int y) {
         try {
             String url = serviceURL +
                     "VERSION=1.1.1&REQUEST=GetFeatureInfo&" +
@@ -151,7 +138,7 @@ public class App {
                     String pow = m.group(1);
                     System.out.println("line match id: " + id + " pow: " + pow);
 
-                    return new Dzialka(id, Integer.parseInt(pow));
+                    return new DzialkiModel.Dzialka(id, Integer.parseInt(pow));
                 })
                 .filter(d -> d != null)
                 .collect(Collectors.toList())
@@ -165,18 +152,18 @@ public class App {
         }
     }
 
-    private static void addPoint(WritableRaster r, int x, int y, Set<Point> points) {
+    private static void addPoint(WritableRaster r, int x, int y, Set<Punkt> points) {
         if (x >= r.getMinX() && x < r.getMinX() + r.getWidth()
             && y >= r.getMinY() && y < r.getMinY() + r.getHeight()
             && r.getSample(x, y, 0) == 0)
 
-            points.add(new Point(x,y));
+            points.add(new Punkt(x,y));
     }
 
-    private static void floodFill(WritableRaster r, Set<Point> points) {
-        Set<Point> visited = new HashSet<>();
+    private static void floodFill(WritableRaster r, Set<Punkt> points) {
+        Set<Punkt> visited = new HashSet<>();
         while (!points.isEmpty()) {
-            Point p = points.iterator().next();
+            Punkt p = points.iterator().next();
             if (visited.contains(p)) throw new RuntimeException("already visited again in floodFill!");
             points.remove(p);
             visited.add(p);
@@ -193,19 +180,22 @@ public class App {
         }
     }
 
-    private static List<Point> getPlotList(BufferedImage bi) {
+    private static DzialkiModel model;
+
+    private static List<Punkt> getPlotList(BufferedImage bi) {
         WritableRaster r = bi.getAlphaRaster();
 
-        List<Point> ret = new ArrayList<>();
+        List<Punkt> ret = new ArrayList<>();
         for (int x = r.getMinX(); x < r.getMinX() + r.getWidth(); x++)
             for (int y = r.getMinY(); y < r.getMinY() + r.getHeight(); y++) {
                 if (r.getSample(x, y, 0) == 0) {
                     System.out.println("floodfill for " + x + " " + y);
-                    Set<Point> points = new HashSet<>();
-                    points.add(new Point(x,y));
+                    Set<Punkt> points = new HashSet<>();
+                    points.add(new Punkt(x,y));
                     floodFill(r, points);
+                    model.obszary.add(points);
 
-                    ret.add(new Point(x, y));
+                    ret.add(new Punkt(x, y));
                 }
             }
 
@@ -216,12 +206,19 @@ public class App {
 
     private static ImageIcon ii;
     private static BufferedImage image;
-    private static String i = buildImageServiceParameters(488612, 650737, 489059, 652176, width, height);
     private static JTextField x1tf;
     private static JTextField y1tf;
     private static JTextField x2tf;
     private static JTextField y2tf;
 
+    protected static String buildParametersString() {
+        return buildImageServiceParameters(
+                Integer.parseInt(x1tf.getText()),
+                Integer.parseInt(y1tf.getText()),
+                Integer.parseInt(x2tf.getText()),
+                Integer.parseInt(y2tf.getText()),
+                width, height);
+    }
     public static void main( String[] args ) throws Exception {
         createComponents();
     }
@@ -305,8 +302,8 @@ public class App {
 
         cp.add(coords, BorderLayout.WEST);
 
-        final JSlider minSize = new JSlider(JSlider.VERTICAL, 10, 3000, 550);
-        final JSlider maxSize = new JSlider(JSlider.VERTICAL, 10, 3000, 560);
+        final JSlider minSize = new JSlider(JSlider.VERTICAL, 300, 2000, 550);
+        final JSlider maxSize = new JSlider(JSlider.VERTICAL, 300, 2000, 560);
         final JLabel lSize = new JLabel("550-560");
         ChangeListener sizeChange = (e) ->  lSize.setText(minSize.getValue() + "-" + maxSize.getValue());
         minSize.addChangeListener(sizeChange);
@@ -324,11 +321,11 @@ public class App {
 
             @Override
             public void actionPerformed(ActionEvent arg0) {
-                image = getImageFromGeoportal(i);
+                image = getImageFromGeoportal(buildParametersString());
                 ii.setImage(image);
 
                 ip.repaint();
-                List<Point> pts = getPlotList(image);
+                List<Punkt> pts = getPlotList(image);
                 JOptionPane.showMessageDialog(main, "Liczba działek na mapie: " + pts.size());
             }
         }));
@@ -336,10 +333,12 @@ public class App {
 
             @Override
             public void actionPerformed(ActionEvent arg0) {
+                final int min = minSize.getValue(), max = maxSize.getValue();
+                final String i = buildParametersString();
                 image = getImageFromGeoportal(i);
                 ii.setImage(image);
                 ip.repaint();
-                List<Point> pts = getPlotList(image);
+                List<Punkt> pts = getPlotList(image);
                 pb.setMaximum(pts.size());
                 pb.setMinimum(0);
                 pb.setValue(0);
@@ -354,7 +353,7 @@ public class App {
                             e.printStackTrace();
                         }
                         return getPlotInfo(i, p.x, p.y); })
-                    .filter(d -> d.powierzchnia > 504 && d.powierzchnia < 515)
+                    .filter(d -> d.powierzchnia > min && d.powierzchnia < max)
                     .map(Object::toString)
                     .collect(Collectors.toList())
                     .toArray(new String[0]);
