@@ -8,6 +8,8 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Point;
 import java.awt.event.ActionEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.awt.image.WritableRaster;
 import java.io.BufferedReader;
@@ -17,9 +19,11 @@ import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -105,12 +109,12 @@ public class App {
     private final static Pattern idPattern = Pattern.compile("IDENTYFIKATOR=\"([^\"]+)\"");
     private final static Pattern powPattern = Pattern.compile("POWIERZCHNIA=\"([^\"]+)\"");
 
-    private static Stream<DzialkiModel.Dzialka> getPlotInfo(String imageServiceParameters, int x, int y) {
+    private static Stream<DzialkiModel.Dzialka> getPlotInfo(String imageServiceParameters, Punkt p) {
         try {
             String url = serviceURL +
                     "VERSION=1.1.1&REQUEST=GetFeatureInfo&" +
                     imageServiceParameters +
-                    "&QUERY_LAYERS=Dzialki&INFO_FORMAT=text/xml&FEATURE_COUNT=999&X=" + x + "&Y=" + y;
+                    "&QUERY_LAYERS=Dzialki&INFO_FORMAT=text/xml&FEATURE_COUNT=999&X=" + p.x + "&Y=" + p.y;
             CloseableHttpClient httpclient = HttpClients.createDefault();
             HttpGet httpget = new HttpGet(url);
             httpget.addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
@@ -138,7 +142,9 @@ public class App {
                     String pow = m.group(1);
                     System.out.println("line match id: " + id + " pow: " + pow);
 
-                    return new DzialkiModel.Dzialka(id, Integer.parseInt(pow));
+                    Set<Punkt> obszar = model.obszary.get(p);
+                    System.out.println("dane dzialki, wielkosc obszaru: " + obszar.size());
+                    return new DzialkiModel.Dzialka(id, Integer.parseInt(pow), obszar);
                 })
                 .filter(d -> d != null)
                 .collect(Collectors.toList())
@@ -160,7 +166,7 @@ public class App {
             points.add(new Punkt(x,y));
     }
 
-    private static void floodFill(WritableRaster r, Set<Punkt> points) {
+    private static Set<Punkt> floodFill(WritableRaster r, Set<Punkt> points) {
         Set<Punkt> visited = new HashSet<>();
         while (!points.isEmpty()) {
             Punkt p = points.iterator().next();
@@ -178,13 +184,16 @@ public class App {
             }
             r.setSample(p.x, p.y, 0, 1);
         }
+        return visited;
     }
 
-    private static DzialkiModel model;
+    private static DzialkiModel model = new DzialkiModel();
 
     private static List<Punkt> getPlotList(BufferedImage bi) {
         WritableRaster r = bi.getAlphaRaster();
 
+        model.obszary = new HashMap<>();
+        model.dzialki = new HashMap<>();
         List<Punkt> ret = new ArrayList<>();
         for (int x = r.getMinX(); x < r.getMinX() + r.getWidth(); x++)
             for (int y = r.getMinY(); y < r.getMinY() + r.getHeight(); y++) {
@@ -192,10 +201,10 @@ public class App {
                     System.out.println("floodfill for " + x + " " + y);
                     Set<Punkt> points = new HashSet<>();
                     points.add(new Punkt(x,y));
-                    floodFill(r, points);
-                    model.obszary.add(points);
+                    Punkt p = new Punkt(x, y);
+                    model.obszary.put(p, floodFill(r, points));
 
-                    ret.add(new Punkt(x, y));
+                    ret.add(p);
                 }
             }
 
@@ -205,7 +214,7 @@ public class App {
     private static final int width = 1024, height = 768;
 
     private static ImageIcon ii;
-    private static BufferedImage image;
+    private static BufferedImage image, baseImage;
     private static JTextField x1tf;
     private static JTextField y1tf;
     private static JTextField x2tf;
@@ -247,6 +256,11 @@ public class App {
         gbc.gridwidth = w;
         gbc.gridheight = h;
 
+        return gbc;
+    }
+
+    private static GridBagConstraints fill(GridBagConstraints gbc, int fill) {
+        gbc.fill = fill;
         return gbc;
     }
 
@@ -305,14 +319,48 @@ public class App {
         final JSlider minSize = new JSlider(JSlider.VERTICAL, 300, 2000, 550);
         final JSlider maxSize = new JSlider(JSlider.VERTICAL, 300, 2000, 560);
         final JLabel lSize = new JLabel("550-560");
-        ChangeListener sizeChange = (e) ->  lSize.setText(minSize.getValue() + "-" + maxSize.getValue());
+        ChangeListener sizeChange = (e) -> {
+            lSize.setText(minSize.getValue() + "-" + maxSize.getValue());
+            if (!model.dzialki.isEmpty()) {
+                System.out.println("dopasowujemy działki");
+                image = new BufferedImage(baseImage.getColorModel(), baseImage.copyData(null), baseImage.isAlphaPremultiplied(), null);
+                model.dzialki.values().stream()
+                .filter(d -> d.powierzchnia >= minSize.getValue() && d.powierzchnia <= maxSize.getValue())
+                .peek(d -> System.out.println("znaleziono działkę " + d))
+                .flatMap(d -> d.obszar.stream())
+                .forEach(p -> {
+                    image.getRaster().setPixel(p.x, p.y, new int[] { 255, 0, 255, 255 });});
+                ii.setImage(image);
+                ip.repaint();
+            }
+        };
         minSize.addChangeListener(sizeChange);
         maxSize.addChangeListener(sizeChange);
 
+        final JList<String> biezDzialki= new JList();
+        ip.addMouseMotionListener(new MouseAdapter() {
+
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                Punkt p = new Punkt(e.getX(), e.getY());
+                System.out.println(p);
+
+                String[] l = model.dzialki.values().stream()
+                .filter(d -> d.obszar.contains(p))
+                .map(Object::toString)
+                .collect(Collectors.toList())
+                .toArray(new String[0])
+                ;
+
+                biezDzialki.setListData(l);
+                biezDzialki.repaint();
+            }
+        });
         JPanel size = new JPanel(new GridBagLayout());
-        size.add(minSize, gbc(0,0));
-        size.add(maxSize, gbc(1,0));
+        size.add(minSize, fill(gbc(0,0), GridBagConstraints.VERTICAL));
+        size.add(maxSize, fill(gbc(1,0), GridBagConstraints.VERTICAL));
         size.add(lSize, gbc(0,1,2,1));
+        size.add(new JScrollPane(biezDzialki), fill(gbc(0,2,2,1), GridBagConstraints.VERTICAL));
 
         cp.add(size, BorderLayout.EAST);
 
@@ -335,7 +383,7 @@ public class App {
             public void actionPerformed(ActionEvent arg0) {
                 final int min = minSize.getValue(), max = maxSize.getValue();
                 final String i = buildParametersString();
-                image = getImageFromGeoportal(i);
+                baseImage = image = getImageFromGeoportal(i);
                 ii.setImage(image);
                 ip.repaint();
                 List<Punkt> pts = getPlotList(image);
@@ -345,23 +393,21 @@ public class App {
 
                 Executors.newSingleThreadExecutor().submit(() -> {
                     ((JButton)arg0.getSource()).setEnabled(false);
-                    String[] ds = pts.stream()
+                    pts.stream()
                     .peek(x -> SwingUtilities.invokeLater(() -> pb.setValue((pb.getValue() + 1))))
                     .flatMap(p -> { try {
                             Thread.sleep(50);
                         } catch (InterruptedException e) {
                             e.printStackTrace();
                         }
-                        return getPlotInfo(i, p.x, p.y); })
-                    .filter(d -> d.powierzchnia > min && d.powierzchnia < max)
-                    .map(Object::toString)
-                    .collect(Collectors.toList())
-                    .toArray(new String[0]);
-
-                    Arrays.asList(ds).forEach(System.out::println);
-                    JList<String> l = new JList<>(ds);
-
-                    JOptionPane.showMessageDialog(main, new JScrollPane(l));
+                        return getPlotInfo(i, p); })
+                    .forEach((d) -> {
+                        System.out.println("Przetwarzam " + d);
+                        if (model.dzialki.containsKey(d.id)) {
+                            model.dzialki.get(d.id).mergeWith(d);
+                        } else
+                            model.dzialki.put(d.id, d);
+                    });
                     ((JButton)arg0.getSource()).setEnabled(true);
                 });
             }
@@ -371,5 +417,6 @@ public class App {
         main.pack();
         main.setVisible(true);
     }
+
 }
 

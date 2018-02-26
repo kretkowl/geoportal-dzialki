@@ -1,8 +1,5 @@
 package kretkowl.geoportal_dzialki;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -13,11 +10,11 @@ public class DzialkiModel {
 
 
     static class Dzialka {
-        public Dzialka(String id, int powierzchnia) {
+        public Dzialka(String id, int powierzchnia, Set<Punkt> obszar) {
             super();
             this.id = id;
             this.powierzchnia = powierzchnia;
-            this.obszar = new HashSet<>();
+            this.obszar = obszar;
         }
         final String id;
         final int powierzchnia;
@@ -42,7 +39,7 @@ public class DzialkiModel {
     int y2;
 
     @Transient
-    List<Set<Punkt>> obszary = new ArrayList<>();
+    Map<Punkt, Set<Punkt>> obszary;
 
     @ElementMap(attribute=true, entry="Dzialka")
     Map<String, Dzialka> dzialki;

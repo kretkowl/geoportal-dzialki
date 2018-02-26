@@ -31,5 +31,9 @@ class Punkt {
             return false;
         return true;
     }
+    @Override
+    public String toString() {
+        return "Punkt [x=" + x + ", y=" + y + "]";
+    }
 
 }
